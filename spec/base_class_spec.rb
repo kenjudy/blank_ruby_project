@@ -26,7 +26,7 @@ describe BaseClass do
 
   describe "run" do
      it "runs" do
-       assert_equal(BaseClass.run, true)
+       assert_equal(true, BaseClass.run)
     end
   end
 
