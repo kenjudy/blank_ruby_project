@@ -1,0 +1,7 @@
+client_id: p-jcoLKBynTLew
+client_secret: gko_LXELoV07ZBNUXrvWZfzE3aI
+username: reddit_bot
+password: snoo
+user_agent: 'subreddit analysis bot v.0.0.1 u/tdbdev'
+data_folder: spec/fixtures
+comment_depth: 1000
