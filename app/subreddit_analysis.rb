@@ -57,11 +57,11 @@ class SubredditAnalysis
       id = submission.id
     end
     data = read(display_name, type, { 'name' => display_name, 'ended_at' => 0, type => [], "id" => id })
-    count = data['ended_at']
+    count =   data['ended_at']
     limit = number - count  > 100 ? 100 : number - count
     if (limit > 0) then
       (count..number-1).each_slice(limit) do |a|
-        log("retrieve #{limit} #{type} starting at #{a.first}")
+        log("retrieve #{limit} #{type} for #{display_name} #{submission.nil? ? '' : "new submission: " + submission.id} starting at #{a.first}")
         if (submission.nil?)
           data = get_submitters(subreddit, data, limit, a.first)
         else
@@ -75,9 +75,10 @@ class SubredditAnalysis
   end
 
   def save(name, type, data)
+    log "Save #{type} with ended_at #{data['ended_at']} and after #{data['after']}"
     case type
     when SUBREDDIT_TYPE
-      @db.execute "insert or replace into subreddits (name, metadata) values ('#{data['display_name']}',  '#{JSON.pretty_generate(data).gsub("'", "''")}');"
+      @db.execute "insert or ignore into subreddits (name, metadata) values ('#{data['display_name']}',  '#{JSON.pretty_generate(data).gsub("'", "''")}');"
     when SUBMITTER_TYPE
       @db.execute "insert or ignore into subreddits (name) values ('#{data['name']}');"
       @db.execute "update subreddits set ended_at=#{data['ended_at']}, after='#{data['after'] || ''}' where name='#{data['name']}';"
@@ -101,12 +102,17 @@ class SubredditAnalysis
       case type
         when SUBMITTER_TYPE
           submitters = @db.execute("select name from submitters where subreddit_name = '#{name}';")
+          log("retrieved submitters for #{name}: subreddit ended_at #{subreddit[1]}")
           data = { 'name' => subreddit[0], 'ended_at' => subreddit[1] || default['ended_at'], 'after' => subreddit[2] || default['after'], 'submitters' => submitters}
         when COMMENTER_TYPE
           subreddit = @db.execute("select name from subreddits where name = '#{name}';").first
           submission = @db.execute("select id, ended_at, after from submissions where id='#{default['id']}'").first
-          commenter_list = @db.execute("select name from commenters where submission_id='#{default['id']}'")
-          data = { 'name' => subreddit[0], 'id' => submission[0], 'ended_at' => submission[1] || default['ended_at'], 'after' => submission[2] || default['after'], 'commenters' => commenter_list.flatten }
+          if (submission.nil?)
+            return default
+          else
+            commenter_list = @db.execute("select name from commenters where submission_id='#{default['id']}'")
+            data = { 'name' => subreddit[0], 'id' => submission[0], 'ended_at' => submission[1] || default['ended_at'], 'after' => submission[2] || default['after'], 'commenters' => commenter_list.flatten }
+          end
         else
           log("Unhandled read: #{name}, #{type}, #{default}")
         end
