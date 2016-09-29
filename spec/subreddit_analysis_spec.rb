@@ -4,6 +4,8 @@ require 'bundler/setup'
 require 'pry'
 require 'mocha/mini_test'
 require "net/http"
+require 'sqlite3'
+
 
 require File.join(__dir__, '..', 'app', 'subreddit_analysis.rb')
 
@@ -14,9 +16,30 @@ describe SubredditAnalysis do
   describe "instance methods" do
     before do
       @subreddit_analysis = SubredditAnalysis.new('spec/fixtures/config.yml')
+      subreddit = JSON.load(File.new("spec/fixtures/funny_subreddit.json"))
+      submission = JSON.load(File.new("spec/fixtures/funny_submitters.json"))
+      @commenters = JSON.load(File.new("spec/fixtures/funny_1324234_commenters.json"))
+      @subreddit_analysis.db.execute "delete from subreddits"
+      @subreddit_analysis.db.execute "insert into subreddits (name, metadata, ended_at, after) values ('funny', '#{JSON.pretty_generate(subreddit).gsub("'", "''")}', #{submission['ended_at']}, '#{submission['after']}')"
+      @subreddit_analysis.db.execute "delete from submissions"
+      @subreddit_analysis.db.execute "insert into submissions (subreddit_name, id, ended_at, after)  values ('funny', '1324234', #{@commenters['ended_at']}, '#{@commenters['after']}')"
+      @subreddit_analysis.db.execute "delete from submitters"
+      for submitter in submission["submitters"]
+        @subreddit_analysis.db.execute "insert into submitters (subreddit_name, name)  values ('funny', '#{submitter}')"
+      end
+      @subreddit_analysis.db.execute "delete from commenters"
+      for commenter in @commenters["commenters"]
+        @subreddit_analysis.db.execute "insert into commenters (subreddit_name, submission_id, name)  values ('funny', '1324234', '#{commenter}')"
+      end
+
+
       @mock = MiniTest::Mock.new
       @subreddit_analysis.client = @mock
       Redd.stubs(:it).returns(@mock)
+    end
+
+    after do
+      @subreddit_analysis.close
     end
 
     it "initializes properties" do
@@ -31,7 +54,7 @@ describe SubredditAnalysis do
 
     describe "retrieve subreddit" do
       before do
-        @subreddit_analysis.stubs(save: nil)
+        # @subreddit_analysis.stubs(save: nil)
       end
 
       it "retrieves a subreddit by name" do
@@ -42,13 +65,29 @@ describe SubredditAnalysis do
     end
 
     describe "read data" do
-      it 'retrieves from the data store' do
-        assert_equal(JSON.load(File.new("spec/fixtures/funny_1324234_commenters.json")), @subreddit_analysis.read('funny_1324234', 'commenters', { name: 'foo' }))
+      describe "retrieves from data store" do
+        before do
+          @result = @subreddit_analysis.read('funny', 'commenters', { 'id' => '1324234'})
+        end
+        it 'matches name' do
+          assert_equal(@commenters['name'], @result['name']);
+        end
+        it 'matches ended_at' do
+          assert_equal(@commenters['ended_at'], @result['ended_at']);
+        end
+        it 'matches name' do
+          assert_equal(@commenters['after'], @result['after']);
+        end
+        it 'matches name' do
+          assert_equal(@commenters['id'], @result['id']);
+        end
+        it 'matches name' do
+          assert_equal(@commenters['commenters'].sort, @result['commenters'].sort);
+        end
       end
 
-
       it 'returns default if there is no data store file' do
-        assert_equal({ name: 'foo'}, @subreddit_analysis.read('foo', 'commenter', { name: 'foo' }))
+        assert_equal({ name: 'foo'}, @subreddit_analysis.read('foo', 'commenter', { name: 'foo'}))
       end
     end
 
@@ -57,7 +96,7 @@ describe SubredditAnalysis do
         @commenters = [ stub(author: "Je---ja", id: '23456')]
         @submission = stub(id: '1324234')
         @subreddit = MiniTest::Mock.new
-        @subreddit_analysis.stubs(save: nil)
+        # @subreddit_analysis.stubs(save: nil)
       end
 
       it "requests 100 commenters if requested" do
@@ -101,11 +140,12 @@ describe SubredditAnalysis do
 
       end
     end
+
     describe "subreddit submissions" do
       before do
-        @submissions = [ stub(author: "Je---ja", id: '23456')]
+        @submissions = [ stub(author: "Je---ja", id: '23456', get_new: [])]
         @subreddit = MiniTest::Mock.new
-        @subreddit_analysis.stubs(save: nil, commenters: nil)
+        @subreddit_analysis.stubs(commenters: nil) #save: nil,
       end
 
       it "requests 100 submissions if requested" do

@@ -3,17 +3,26 @@ require 'bundler/setup'
 require 'redd'
 require 'yaml'
 require 'json'
+require 'sqlite3'
 
 class SubredditAnalysis
   attr_accessor :props, :client, :access
+  attr_reader :db
 
   COMMENTER_TYPE = 'commenters'
-  SUBREDDIT_TYPE = 'subreddit'
-  SUBMISSION_TYPE = 'submission'
+  SUBREDDIT_TYPE = 'subreddits'
+  SUBMISSION_TYPE = 'submissions'
   SUBMITTER_TYPE = 'submitters'
 
   def initialize(config_file, props = {})
+    @environment = ENV['environment'] || 'production'
+    log("Running in #{@environment} mode.")
     @props = YAML.load_file(config_file).merge(props)
+    @db = init_db
+  end
+
+  def close
+    @db.close if @db
   end
 
   def authorize
@@ -29,39 +38,11 @@ class SubredditAnalysis
     return subreddit
   end
 
-  def submissions(subreddit, number = @props['comment_depth'])
-    # display_name = subreddit.display_name
-    # data = read(display_name, SUBMITTER_TYPE, { 'name' => display_name, 'ended_at' => 0, 'submitters' => [] })
-    # count = data['ended_at']
-    # limit = number - count  > 100 ? 100 : number - count
-    # if (limit > 0) then
-    #   (count..number-1).each_slice(limit) do |a|
-    #     log("retrieve #{limit} submissions starting at #{a.first}")
-    #     data = get_submitters(subreddit, data, limit, a.first)
-    #     log("saving #{data['submitters'].length}...")
-    #     save(display_name, SUBMITTER_TYPE, data)
-    #   end
-    # end
-    # return data
+  def submissions(subreddit, number = @props['submission_depth'])
     return users_from_submissions_and_comments(number, subreddit)
   end
 
-  #:count (Integer) — default: 0 — The number of items already seen in the listing.
-  #:limit (1..100) — default: 25 — The maximum number of things to return.
   def commenters(subreddit, submission, number = @props['comment_depth'])
-    # display_name = "#{subreddit.display_name}_#{submission.id }"
-    # data = read(display_name, COMMENTER_TYPE, { 'name' => display_name, 'ended_at' => 0, 'commenters' => [] })
-    # count = data['ended_at']
-    # limit = number - count  > 100 ? 100 : number - count
-    # if (limit > 0) then
-    #   (count..number-1).each_slice(limit) do |a|
-    #     log("retrieve #{limit} commenters starting at #{a.first}")
-    #     data = get_commenters(subreddit, data, limit, a.first)
-    #     log("saving #{data['commenters'].length}...")
-    #     save(display_name, COMMENTER_TYPE, data)
-    #   end
-    # end
-    # return data
     return users_from_submissions_and_comments(number, subreddit, submission)
   end
 
@@ -73,9 +54,9 @@ class SubredditAnalysis
       type = SUBMITTER_TYPE
     else
       type = COMMENTER_TYPE
-      display_name += "_#{submission.id }"
+      id = submission.id
     end
-    data = read(display_name, type, { 'name' => display_name, 'ended_at' => 0, type => [] })
+    data = read(display_name, type, { 'name' => display_name, 'ended_at' => 0, type => [], "id" => id })
     count = data['ended_at']
     limit = number - count  > 100 ? 100 : number - count
     if (limit > 0) then
@@ -93,26 +74,67 @@ class SubredditAnalysis
     return data
   end
 
-  def save(name, type, obj)
-    File.open("#{@props['data_folder']}/#{name}_#{type}.json","w") do |f|
-      f.write(JSON.pretty_generate(obj))
+  def save(name, type, data)
+    case type
+    when SUBREDDIT_TYPE
+      @db.execute "insert or replace into subreddits (name, metadata) values ('#{data['display_name']}',  '#{JSON.pretty_generate(data).gsub("'", "''")}');"
+    when SUBMITTER_TYPE
+      @db.execute "insert or ignore into subreddits (name) values ('#{data['name']}');"
+      @db.execute "update subreddits set ended_at=#{data['ended_at']}, after='#{data['after'] || ''}' where name='#{data['name']}';"
+      for submitter in data['submitters']
+        @db.execute "insert or replace into submitters (subreddit_name, name) values ('#{data['name']}', '#{submitter}');"
+      end
+    when COMMENTER_TYPE
+      @db.execute "insert or replace into submissions (subreddit_name, id, ended_at, after) values ('#{data['name']}', '#{data['id']}', #{data['ended_at']}, '#{data['after'] || ''}');"
+      for commenter in data['commenters']
+        @db.execute "insert or replace into commenters (subreddit_name, submission_id, name) values ('#{data['name']}', '#{data['id']}', '#{submitter}');"
+      end
+    else
+      log("Unhandled save: #{name}, #{type}, #{default}")
     end
+    # File.open("#{@props['data_folder']}/#{name}_#{type}.json","w") do |f|
+    #   f.write(JSON.pretty_generate(obj))
+    # end
   end
 
   def read(name, type, default)
+    data = default
     begin
-      return JSON.load File.new("#{@props['data_folder']}/#{name}_#{type}.json")
+      subreddit = @db.execute("select name, ended_at, after from subreddits where name = '#{name}';").first
+    case type
+      when SUBMITTER_TYPE
+        submitters = @db.execute("select name from submitters where subreddit_name = '#{name}';")
+        data = { 'name' => subreddit[0], 'ended_at' => subreddit[1], 'after' => subreddit[2], 'submitters' => submitters}
+      when COMMENTER_TYPE
+        subreddit = @db.execute("select name from subreddits where name = '#{name}';").first
+        submission = @db.execute("select id, ended_at, after from submissions where id = #{default['id']}").first
+        commenter_list = @db.execute("select name from commenters where submission_id = #{default['id']}")
+        data = { 'name' => subreddit[0], 'id' => submission[0], 'ended_at' => submission[1], 'after' => submission[2], 'commenters' => commenter_list.flatten }
+      else
+        log("Unhandled read: #{name}, #{type}, #{default}")
+      end
+      return data
     rescue Exception => e
       log e
       return default
     end
+    # begin
+    #   return JSON.load File.new("#{@props['data_folder']}/#{name}_#{type}.json")
+    # rescue Exception => e
+    #   log e
+    #   return default
+    # end
   end
 
   def self.run(subreddit)
-    bot = SubredditAnalysis.new('./config/config.yml')
-    bot.authorize
-    subreddit = bot.subreddit(subreddit)
-    bot.submissions(subreddit)
+    begin
+      bot = SubredditAnalysis.new('./config/config.yml')
+      bot.authorize
+      subreddit = bot.subreddit(subreddit)
+      bot.submissions(subreddit)
+    ensure
+      bot.close if bot
+    end
   end
 
   private
@@ -120,28 +142,62 @@ class SubredditAnalysis
   def log(message)
     unless(ENV['environment'] == 'test') then
       puts message
+      puts message.backtrace if message.respond_to?(:backtrace)
     end
   end
 
   def get_commenters(subreddit, data, limit, count)
-    #puts "next #{limit} starting at #{count}"
     comment_list = subreddit.get_comments(limit: limit, count: count, after: data['after'])
-    new_commenters = comment_list.map { |c| c.author }
-    data[COMMENTER_TYPE] = (data[COMMENTER_TYPE] + new_commenters).uniq
-    data['ended_at'] = limit + count
-    data['after'] = comment_list.last.id
-    return data
+    return to_author_list(comment_list, COMMENTER_TYPE, data, limit, count)
   end
 
   def get_submitters(subreddit, data, limit, count)
-    #puts "next #{limit} starting at #{count}"
     submission_list = subreddit.get_new(limit: limit, count: count, after: data['after'])
     submission_list.each { |s| commenters(subreddit, s) }
-    new_submitters = submission_list.map { |s| s.author }
-    data[SUBMITTER_TYPE] = (data[SUBMITTER_TYPE] + new_submitters).uniq
+    return to_author_list(submission_list, SUBMITTER_TYPE, data, limit, count)
+  end
+
+  def to_author_list(list, type, data, limit, count)
+    authors = list.map { |s| s.author }
+    data[type] = (data[type] + authors).uniq
     data['ended_at'] = limit + count
-    data['after'] = submission_list.last.id
+    data['after'] = list.last.id
     return data
   end
 
+  def init_db
+    db = SQLite3::Database.new "#{@props['data_folder']}/subreddit_analysis_#{@environment}.db"
+    db.execute <<-SQL
+      create table if not exists subreddits (
+        name varchar(255) PRIMARY KEY,
+        metadata text,
+        ended_at integer,
+        after varchar(255)
+      );
+    SQL
+    db.execute <<-SQL
+      create table if not exists submitters (
+        subreddit_name varchar(255) references subreddit(name) ON UPDATE CASCADE,
+        name varchar(255),
+        PRIMARY KEY (name, subreddit_name)
+      );
+    SQL
+    db.execute <<-SQL
+      create table if not exists submissions (
+        subreddit_name varchar(255) references subreddit(name) ON UPDATE CASCADE,
+        id varchar(255) PRIMARY KEY,
+        ended_at integer,
+        after varchar(255)
+      );
+    SQL
+    db.execute <<-SQL
+      create table if not exists commenters (
+        subreddit_name varchar(255) references subreddit(name) ON UPDATE CASCADE,
+        submission_id varchar(255) references submission(id) ON UPDATE CASCADE,
+        name varchar(255),
+        PRIMARY KEY (submission_id, name)
+      );
+    SQL
+    return db
+  end
 end
