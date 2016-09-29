@@ -92,38 +92,29 @@ class SubredditAnalysis
     else
       log("Unhandled save: #{name}, #{type}, #{default}")
     end
-    # File.open("#{@props['data_folder']}/#{name}_#{type}.json","w") do |f|
-    #   f.write(JSON.pretty_generate(obj))
-    # end
   end
 
   def read(name, type, default)
     data = default
     begin
       subreddit = @db.execute("select name, ended_at, after from subreddits where name = '#{name}';").first
-    case type
-      when SUBMITTER_TYPE
-        submitters = @db.execute("select name from submitters where subreddit_name = '#{name}';")
-        data = { 'name' => subreddit[0], 'ended_at' => subreddit[1], 'after' => subreddit[2], 'submitters' => submitters}
-      when COMMENTER_TYPE
-        subreddit = @db.execute("select name from subreddits where name = '#{name}';").first
-        submission = @db.execute("select id, ended_at, after from submissions where id = #{default['id']}").first
-        commenter_list = @db.execute("select name from commenters where submission_id = #{default['id']}")
-        data = { 'name' => subreddit[0], 'id' => submission[0], 'ended_at' => submission[1], 'after' => submission[2], 'commenters' => commenter_list.flatten }
-      else
-        log("Unhandled read: #{name}, #{type}, #{default}")
+      case type
+        when SUBMITTER_TYPE
+          submitters = @db.execute("select name from submitters where subreddit_name = '#{name}';")
+          data = { 'name' => subreddit[0], 'ended_at' => subreddit[1] || default['ended_at'], 'after' => subreddit[2] || default['after'], 'submitters' => submitters}
+        when COMMENTER_TYPE
+          subreddit = @db.execute("select name from subreddits where name = '#{name}';").first
+          submission = @db.execute("select id, ended_at, after from submissions where id='#{default['id']}'").first
+          commenter_list = @db.execute("select name from commenters where submission_id='#{default['id']}'")
+          data = { 'name' => subreddit[0], 'id' => submission[0], 'ended_at' => submission[1] || default['ended_at'], 'after' => submission[2] || default['after'], 'commenters' => commenter_list.flatten }
+        else
+          log("Unhandled read: #{name}, #{type}, #{default}")
+        end
+        return data
+      rescue Exception => e
+        log e
+        return default
       end
-      return data
-    rescue Exception => e
-      log e
-      return default
-    end
-    # begin
-    #   return JSON.load File.new("#{@props['data_folder']}/#{name}_#{type}.json")
-    # rescue Exception => e
-    #   log e
-    #   return default
-    # end
   end
 
   def self.run(subreddit)
