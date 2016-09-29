@@ -1,5 +1,4 @@
 # blank ruby project
-Base implementation of ruby project using minitest
 
 # subreddit
 #  submissions 10000 (subreddit.get_new)
